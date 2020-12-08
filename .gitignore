@@ -1,0 +1,24 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, build with `go test -c`
+*.test
+
+# Configs and Keys, even for testing...
+*.pem
+*.yaml
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+
+*.bak
+bin
+*.tar.gz
+*.tgz
+grouper
+logs.txt
+alice.txt
