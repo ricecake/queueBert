@@ -26,6 +26,7 @@ import (
 )
 
 var inStock bool
+var inQueue bool
 var onlyAfter time.Time
 
 // watchCmd represents the watch command
@@ -39,6 +40,7 @@ Cobra is a CLI library for Go that empowers applications.
 This application is a tool to generate the needed files
 to quickly create a Cobra application.`,
 	Run: func(cmd *cobra.Command, args []string) {
+		log.SetLevelFromString(viper.GetString("log_level"))
 		c := make(chan os.Signal)
 		signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 
@@ -76,6 +78,13 @@ to quickly create a Cobra application.`,
 				discord.ChannelMessageSend(viper.GetString("channel"), gif)
 			}
 
+			if viper.GetBool("debug_mode") {
+				gif, err := gifIt("testing")
+				if err == nil {
+					discord.ChannelMessageSend(viper.GetString("channel"), gif)
+				}
+			}
+
 			onlyAfter = time.Now()
 			timer := time.Tick(viper.GetDuration("interval") * time.Second)
 			for {
@@ -87,22 +96,24 @@ to quickly create a Cobra application.`,
 						discord.ChannelMessageSend(viper.GetString("channel"), gif)
 					}
 
+					os.Exit(0)
 					return nil
 				case <-timer:
+					wasInQueue := inQueue
 					wasInStock := inStock
 					if time.Now().Before(onlyAfter) {
 						continue
 					}
 
-					err := backoff.Retry(checkAndNotify, backoff.NewExponentialBackOff())
+					err := backoff.Retry(func() error { return checkAndNotify(discord) }, backoff.NewExponentialBackOff())
 					if err != nil {
 						log.Error(err.Error())
 						return err
 					}
-					if inStock && !wasInStock {
+					if (inStock || inQueue) && !(wasInStock || wasInQueue) {
 						log.Info("In queue, slowing down")
 						timer = time.Tick(viper.GetDuration("recheck_interval") * time.Second)
-					} else if !inStock && wasInStock {
+					} else if !(inStock || inQueue) && (wasInQueue || wasInStock) {
 						log.Info("Gone again, speeding up")
 						timer = time.Tick(viper.GetDuration("interval") * time.Second)
 					}
@@ -166,19 +177,23 @@ type SonyDirectProductResponse struct {
 var checks int
 var lastChecked time.Time
 
-func checkAndNotify() error {
+func checkAndNotify(s *discordgo.Session) error {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Errorf("OOPS! It exploded! %s", r)
 		}
 	}()
 
+	log.Debugf("Iteration %s", checks)
+
 	url := "https://direct.playstation.com/en-us/consoles/console/playstation5-console.3005816"
 	redirected, err := wouldEnqueue(url)
 	if err != nil {
+		log.Debug(err.Error())
 		onlyAfter = time.Now().Add(1 * time.Minute)
 		return nil
 	}
+	log.Debugf("redirect val %+v", redirected)
 
 	response, fetchErr := pullProductData(viper.GetString("product"))
 	if fetchErr != nil {
@@ -189,24 +204,27 @@ func checkAndNotify() error {
 		onlyAfter = time.Now().Add(1 * time.Minute)
 		return nil
 	}
-	// log.Infof("%+v\n", response.Products[0].Stock.StockLevelStatus)
 	stockStatus := response.Products[0].Stock.StockLevelStatus
+	log.Debugf("Stock level %s", stockStatus)
 
-	var blocked bool
+	var gotOutOfStock bool
 	if viper.GetBool("debug_mode") {
-		blocked = (checks%30) < 10 || (checks%30) > 15
+		gotOutOfStock = (checks%30) < 10 || (checks%30) > 15
+		redirected = (checks%30) > 5 && (checks%30) < 20
 	} else {
-		blocked = stockStatus == viper.GetString("block_status")
+		gotOutOfStock = stockStatus == viper.GetString("block_status")
 	}
-	if blocked {
-		if inStock {
-			log.Info("Poo!  Looks like it's gone")
-			inStock = false
-		}
-	} else {
-		if !inStock {
+
+	log.Debugf("OOS: %t REDIR: %t", gotOutOfStock, redirected)
+	if redirected {
+		if !inQueue {
+			gif, err := gifIt("lets do this")
+			if err == nil {
+				s.ChannelMessageSend(viper.GetString("channel"), gif)
+			}
+
 			log.Infof("%s Got status %s. It's go time!", viper.GetString("notify"), stockStatus)
-			inStock = true
+			inQueue = true
 			openTabErr := exec.Command("xdg-open", url).Start()
 			if openTabErr != nil {
 				log.Error("Couldn't open a tab! Panic!")
@@ -215,6 +233,23 @@ func checkAndNotify() error {
 
 			log.Info("Opened a tab!")
 			log.Infof("%s Click me if you want to try! %s", viper.GetString("notify"), url)
+		}
+	} else {
+		if inQueue {
+			log.Info("No longer doing redirect")
+			inQueue = false
+		}
+	}
+
+	if gotOutOfStock {
+		if inStock {
+			log.Info("Poo!  Looks like it's gone")
+			inStock = false
+		}
+	} else {
+		if !inStock {
+			log.Info("Seems to be available!")
+			inStock = true
 		}
 	}
 
