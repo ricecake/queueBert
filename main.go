@@ -7,5 +7,5 @@ package main
 import "queueBert/cmd"
 
 func main() {
-  cmd.Execute()
+	cmd.Execute()
 }
