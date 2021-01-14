@@ -6,11 +6,13 @@ package cmd
 
 import (
 	"fmt"
+	"math/rand"
 	"os"
 	"os/signal"
 	"regexp"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/apex/log"
 	"github.com/bwmarrin/discordgo"
@@ -62,6 +64,9 @@ to quickly create a Cobra application.`,
 			}
 
 			discord.AddHandler(messageCreate)
+			discord.AddHandler(reactionAdd)
+
+			discord.Identify.Intents = discordgo.MakeIntent(discordgo.IntentsAllWithoutPrivileged)
 
 			err = discord.Open()
 			if err != nil {
@@ -152,12 +157,21 @@ Can start multiple timers in goroutines that can each publish an action on a tim
 That way different things can be recurring.
 Want a way to post random catfacts at different intervals, as well as fortunes, or images from odd twitter accounts and subreddits.
 */
+func reactionAdd(s *discordgo.Session, r *discordgo.MessageReactionAdd) {
+	if r.MessageReaction.UserID == viper.GetString("bot_id") {
+		return
+	}
+
+	if viper.GetBool("debug_mode") {
+		spew.Dump(r)
+	}
+}
 func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	if m.Author.ID == viper.GetString("bot_id") {
 		return
 	}
 
-	if viper.GetBool("debug") {
+	if viper.GetBool("debug_mode") {
 		spew.Dump(m)
 	}
 
@@ -200,10 +214,9 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		s.Close()
 		os.Exit(0)
 	default:
-		// TODO: Make thie convert to sarcasm case, and be less frequent than 1/20
-		// if rand.Intn(500) == 5 {
-		// 	s.ChannelMessageSendTTS(m.ChannelID, m.Content)
-		// }
+		if rand.Float64() < viper.GetFloat64("sarchasm_echo_odds") {
+			s.ChannelMessageSend(m.ChannelID, sarcastify(m.Content))
+		}
 	}
 }
 
@@ -231,4 +244,15 @@ func MatchToMap(re *regexp.Regexp, input string) map[string]string {
 	}
 
 	return output
+}
+
+func sarcastify(input string) (output string) {
+	for _, c := range input {
+		if rand.Intn(2) == 0 {
+			output += string(unicode.ToUpper(c))
+		} else {
+			output += string(unicode.ToLower(c))
+		}
+	}
+	return
 }
